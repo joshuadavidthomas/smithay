@@ -292,6 +292,11 @@ additionally drops the buffers cached for copying between a render and a target 
 
 ### Bugfixes
 
+`PopupPointerGrab` no longer drops the pointer motion that ends it. When the motion arrives after the
+popup grab has ended, the grab is released and the motion is now forwarded, as `button` already does.
+Previously the pointer stayed at its old location and focus until the next motion, so a click right
+after a popup closed (for example a client destroying its popup) landed at the previous position.
+
 `LibinputInputBackend` now processes events libinput has queued without making its file descriptor
 readable: the `DeviceAdded` events for devices already present after `Libinput::udev_assign_seat` and
 `Libinput::resume`, and `DeviceRemoved` after `Libinput::suspend`. Previously these waited for the next

@@ -555,6 +555,7 @@ where
     ) {
         if self.popup_grab.has_ended() {
             handle.unset_grab(self, data, event.serial, event.time, true);
+            handle.motion(data, focus, event);
             return;
         }
 
