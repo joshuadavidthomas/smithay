@@ -872,6 +872,10 @@ impl X11Surface {
     ///   - The wl_surface has been assigned the same serial using the [xwayland
     ///     shell](crate::wayland::xwayland_shell) protocol on the wayland side,
     ///     and then committed.
+    ///
+    /// XWayland before 23.1 has no xwayland shell. Its windows are associated
+    /// once the wl_surface named by [`wl_surface_id`][Self::wl_surface_id]
+    /// exists.
     #[inline]
     pub fn wl_surface(&self) -> Option<WlSurface> {
         self.state.lock().unwrap().wl_surface.clone()

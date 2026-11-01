@@ -24,6 +24,11 @@
 //!
 //! Note that these two steps can happen in any order.
 //!
+//! XWayland before 23.1 has no xwayland shell. It sends a `WL_SURFACE_ID`
+//! message with the protocol ID of the window's `wl_surface` instead, which is
+//! matched once both the message and the surface have arrived. The surface gets
+//! the same "xwayland_shell" role.
+//!
 //! # Example
 //!
 //! ```no_run
@@ -141,6 +146,7 @@ use crate::{
     output::Output,
     utils::{Client, Logical, Point, Rectangle, Size, x11rb::X11Source},
     wayland::{
+        compositor,
         selection::SelectionTarget,
         xwayland_shell::{self, XWaylandShellHandler},
     },
@@ -163,7 +169,7 @@ use std::{
     },
 };
 use tracing::{debug, debug_span, info, trace, warn};
-use wayland_server::{DisplayHandle, Resource};
+use wayland_server::{DisplayHandle, Resource, protocol::wl_surface::WlSurface};
 
 pub use x11rb::protocol::xproto::Window as X11Window;
 use x11rb::{
@@ -591,6 +597,7 @@ pub trait XwmHandler {
 pub struct X11Wm {
     id: XwmId,
     conn: Arc<RustConnection>,
+    client: wayland_server::Client,
     client_scale: Arc<AtomicF64>,
     screen: Screen,
     wm_window: OwnedX11Window,
@@ -600,6 +607,8 @@ pub struct X11Wm {
     randr_primary: u32,
 
     pub(crate) unpaired_surfaces: HashMap<u64, X11Window>,
+    // WL_SURFACE_ID messages whose wl_surface did not exist yet, by protocol ID.
+    unpaired_surface_ids: HashMap<u32, X11Window>,
     sequences_to_ignore: BinaryHeap<Reverse<u16>>,
     colormaps: RefCell<HashMap<Visualid, Colormap>>,
 
@@ -1001,6 +1010,9 @@ impl X11Wm {
 
         // We need this for the commit hook.
         client_data.user_data().insert_if_missing(|| id);
+        client_data
+            .user_data()
+            .insert_if_missing(|| NewSurfaceHook::<D>(associate_new_surface::<D>));
 
         let _xfixes_data = conn
             .query_extension(x11rb::protocol::xfixes::X11_EXTENSION_NAME.as_bytes())?
@@ -1026,6 +1038,7 @@ impl X11Wm {
         let wm = Self {
             id,
             conn,
+            client,
             client_scale,
             screen,
             atoms,
@@ -1038,6 +1051,7 @@ impl X11Wm {
             primary,
             dnd,
             unpaired_surfaces: Default::default(),
+            unpaired_surface_ids: Default::default(),
             sequences_to_ignore: Default::default(),
             colormaps: Default::default(),
             windows: Vec::new(),
@@ -1516,6 +1530,54 @@ impl X11Wm {
     }
 }
 
+/// Called by the compositor module for each new `wl_surface` of the XWayland
+/// client, which may be named by a `WL_SURFACE_ID` message that came first.
+pub(crate) struct NewSurfaceHook<D>(pub(crate) fn(&mut D, &WlSurface));
+
+fn associate_new_surface<D>(state: &mut D, wl_surface: &WlSurface)
+where
+    D: XwmHandler + XWaylandShellHandler + SeatHandler + 'static,
+{
+    let Some(xwm_id) = wl_surface.client().and_then(|client| {
+        client
+            .get_data::<XWaylandClientData>()?
+            .user_data()
+            .get::<XwmId>()
+            .copied()
+    }) else {
+        return;
+    };
+    let xwm = state.xwm_state(xwm_id);
+    let Some(window) = xwm.unpaired_surface_ids.remove(&wl_surface.id().protocol_id()) else {
+        return;
+    };
+    if let Some(xsurface) = xwm.windows.iter().find(|x| x.window_id() == window).cloned() {
+        associate_wl_surface_id(state, xwm_id, xsurface, wl_surface.clone());
+    }
+}
+
+fn associate_wl_surface_id<D>(state: &mut D, xwm_id: XwmId, xsurface: X11Surface, wl_surface: WlSurface)
+where
+    D: XwmHandler + XWaylandShellHandler + SeatHandler + 'static,
+{
+    if compositor::give_role(&wl_surface, xwayland_shell::XWAYLAND_SHELL_ROLE).is_err() {
+        // Posting a protocol error would only kill XWayland.
+        warn!(
+            window = xsurface.window_id(),
+            wl_surface = ?wl_surface.id().protocol_id(),
+            "wl_surface named by WL_SURFACE_ID already has a role",
+        );
+        return;
+    }
+    debug!(
+        window = xsurface.window_id(),
+        wl_surface = ?wl_surface.id().protocol_id(),
+        "associated X11 window to wl_surface by id",
+    );
+    xsurface.set_wl_surface(state, Some(wl_surface.clone()));
+    XWaylandShellHandler::surface_associated(state, xwm_id, wl_surface, xsurface);
+}
+
 fn handle_event<D>(
     loop_handle: &LoopHandle<'_, D>,
     dh: &DisplayHandle,
@@ -1856,6 +1918,7 @@ where
         }
         Event::UnmapNotify(n) => {
             if let Some(surface) = xwm.windows.iter().find(|x| x.window_id() == n.window).cloned() {
+                xwm.unpaired_surface_ids.retain(|_, w| *w != n.window);
                 xwm.client_list.retain(|w| *w != surface.window_id());
                 xwm.client_list_stacking.retain(|w| *w != surface.window_id());
                 {
@@ -1910,6 +1973,7 @@ where
             xwm.dnd.window_destroyed(&n.window, loop_handle);
 
             if let Some(pos) = xwm.windows.iter().position(|x| x.window_id() == n.window) {
+                xwm.unpaired_surface_ids.retain(|_, w| *w != n.window);
                 let surface = xwm.windows.remove(pos);
                 surface.handle_destroyed();
                 drop(_guard);
@@ -2444,18 +2508,33 @@ where
                         surface = ?wid,
                         "mapped X11 window to surface",
                     );
-                    if let Some(surface) = xwm
+                    if let Some(xsurface) = xwm
                         .windows
-                        .iter_mut()
+                        .iter()
                         .find(|x| x.window_id() == msg.window || x.mapped_window_id() == Some(msg.window))
+                        .cloned()
                     {
-                        // This is the old, deprecated method for associating a
-                        // wl_surface with an X11 window. It can race with the
-                        // lifecycle of the wl_surface. Still, we can make it
-                        // available to compositors who want to support old
-                        // versions of xwayland by manually matching on ID in an
-                        // idle callback.
-                        surface.state.lock().unwrap().wl_surface_id = Some(wid);
+                        // XWayland before 23.1 has no xwayland shell and sends
+                        // this message instead of WL_SURFACE_SERIAL. The
+                        // wl_surface's creation travels over the wayland socket,
+                        // so it can arrive before or after this message.
+                        xsurface.state.lock().unwrap().wl_surface_id = Some(wid);
+                        let window = xsurface.window_id();
+                        xwm.unpaired_surface_ids.retain(|_, w| *w != window);
+                        match xwm.client.object_from_protocol_id::<WlSurface>(dh, wid) {
+                            Ok(wl_surface) => {
+                                drop(_guard);
+                                associate_wl_surface_id(state, xwm_id, xsurface, wl_surface);
+                            }
+                            Err(_) => {
+                                debug!(
+                                    window,
+                                    wl_surface = wid,
+                                    "wl_surface named by WL_SURFACE_ID does not exist yet"
+                                );
+                                xwm.unpaired_surface_ids.insert(wid, window);
+                            }
+                        }
                     }
                 }
                 x if x == xwm.atoms.WL_SURFACE_SERIAL => {

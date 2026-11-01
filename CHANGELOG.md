@@ -292,6 +292,12 @@ additionally drops the buffers cached for copying between a render and a target 
 
 ### Bugfixes
 
+`X11Wm` associates windows of XWayland before 23.1 with their `wl_surface` again. Those versions cannot bind
+the xwayland shell and name each window's surface with a `WL_SURFACE_ID` message, which the XWM only stored,
+so their windows never showed. The message and the surface's creation arrive over different sockets, so the
+XWM matches whichever comes second, and gives the surface the "xwayland_shell" role. Debian 12 ships
+XWayland 22.1.
+
 `LibinputInputBackend` now processes events libinput has queued without making its file descriptor
 readable: the `DeviceAdded` events for devices already present after `Libinput::udev_assign_seat` and
 `Libinput::resume`, and `DeviceRemoved` after `Libinput::suspend`. Previously these waited for the next

@@ -65,7 +65,7 @@ where
     fn request(
         &self,
         state: &mut D,
-        _client: &wayland_server::Client,
+        #[cfg_attr(not(feature = "xwayland"), allow(unused_variables))] client: &wayland_server::Client,
         _resource: &WlCompositor,
         request: wl_compositor::Request,
         _dhandle: &DisplayHandle,
@@ -88,6 +88,14 @@ where
 
                 PrivateSurfaceData::init(&surface);
                 state.new_surface(&surface);
+
+                #[cfg(feature = "xwayland")]
+                if let Some(hook) = client
+                    .get_data::<crate::xwayland::XWaylandClientData>()
+                    .and_then(|data| data.user_data().get::<crate::xwayland::xwm::NewSurfaceHook<D>>())
+                {
+                    (hook.0)(state, &surface);
+                }
             }
             wl_compositor::Request::CreateRegion { id } => {
                 trace!(id = ?id, "Creating a new wl_region");
