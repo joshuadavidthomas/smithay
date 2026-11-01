@@ -106,7 +106,8 @@ impl input::TouchFrameEvent<EiInput> for request::Frame {}
 
 impl input::KeyboardKeyEvent<EiInput> for request::KeyboardKey {
     fn key_code(&self) -> input::Keycode {
-        input::Keycode::from(self.key + 8)
+        // The key code comes from the EI client unvalidated, so it can be any `u32`.
+        input::Keycode::from(self.key.saturating_add(8))
     }
 
     fn state(&self) -> KeyState {

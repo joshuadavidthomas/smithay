@@ -292,6 +292,10 @@ additionally drops the buffers cached for copying between a render and a target 
 
 ### Bugfixes
 
+`KeyboardKeyEvent::key_code` for `EiInput` no longer overflows when an EI client sends a key code above
+`u32::MAX - 8`. It saturates, as the virtual keyboard backend already does. Previously such a key code panicked
+builds with overflow checks and wrapped to a keycode below 8 otherwise.
+
 `LibinputInputBackend` now processes events libinput has queued without making its file descriptor
 readable: the `DeviceAdded` events for devices already present after `Libinput::udev_assign_seat` and
 `Libinput::resume`, and `DeviceRemoved` after `Libinput::suspend`. Previously these waited for the next
