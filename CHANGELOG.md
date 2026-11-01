@@ -292,6 +292,11 @@ additionally drops the buffers cached for copying between a render and a target 
 
 ### Bugfixes
 
+Keymaps now compile on libxkbcommon before 1.6, which rejects a buffer whose last byte is NUL. The virtual
+keyboard leaves a trailing NUL out of a client's keymap size, as `wtype` counts it, and the libei seat advertises
+the keymap text length instead of the sealed file's size. Previously `wtype` keymaps failed to compile and their
+keys were dropped, and EI clients compiling at the advertised size failed the same way.
+
 `LibinputInputBackend` now processes events libinput has queued without making its file descriptor
 readable: the `DeviceAdded` events for devices already present after `Libinput::udev_assign_seat` and
 `Libinput::resume`, and `DeviceRemoved` after `Libinput::suspend`. Previously these waited for the next

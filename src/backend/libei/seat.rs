@@ -294,7 +294,12 @@ impl EiInputSeatInner {
                     DeviceCapability::Keyboard.into(),
                     |device| {
                         let keyboard = device.interface::<reis::eis::Keyboard>().unwrap();
-                        let _ = keymap_file.with_fd(true, |fd, len| {
+                        // The sealed file ends in a NUL terminator, which libxkbcommon
+                        // before 1.6 rejects when a client compiles the keymap at the
+                        // advertised size. Advertise the keymap's own length, as
+                        // libei-based servers such as mutter do.
+                        let len = keymap_file.as_str().len();
+                        let _ = keymap_file.with_fd(true, |fd, _| {
                             keyboard.keymap(reis::eis::keyboard::KeymapType::Xkb, len as u32, fd);
                         });
                     },

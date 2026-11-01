@@ -384,7 +384,15 @@ where
 }
 
 /// Compile a client-supplied `xkb_v1` keymap, returning it if valid.
-fn compile_keymap(fd: OwnedFd, size: usize) -> Option<xkb::Keymap> {
+fn compile_keymap(fd: OwnedFd, mut size: usize) -> Option<xkb::Keymap> {
+    // Clients such as `wtype` count the NUL terminator in `size`, as
+    // `wl_keyboard.keymap` senders do. libxkbcommon before 1.6 rejects a buffer
+    // whose last byte is NUL, so leave it out.
+    let mut last = [0xff];
+    if size > 0 && rustix::io::pread(&fd, &mut last, (size - 1) as u64) == Ok(1) && last == [0] {
+        size -= 1;
+    }
+
     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     // SAFETY: we can map the keymap into the memory.
     let keymap = match unsafe {
